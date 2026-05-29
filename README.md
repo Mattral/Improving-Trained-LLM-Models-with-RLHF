@@ -4,9 +4,26 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Scale: Petascale Verified](https://img.shields.io/badge/Scale-10,000%20GPUs-orange.svg)](#)
 
-An industrial-grade, hardware-co-designed post-training orchestration engine built to scale Reinforcement Learning from Human Feedback (RLHF) and Proximal Policy Optimization (PPO) across massive GPU clusters (up to 10,000 nodes). This platform eliminates the classic compute efficiency bottlenecks of alignment pipelines by fusing **asymmetric process group isolation** with **asynchronous, non-blocking rollout ring-buffers** and **NCCL communication overlapping**.
+A modular, distributed training framework for scaling Reinforcement Learning from Human Feedback (RLHF) with Proximal Policy Optimization (PPO).
+This project focuses on **efficient multi-node execution**, **decoupled rollout generation**, and **communication-aware training loops** for large language model post-training workloads.
+> ⚠️ Note: This is an experimental research framework. While designed with large-scale systems in mind, it has **not been validated at extreme cluster scales (e.g., 10,000 GPUs)**.
 
 ---
+
+---
+## Overview
+RLHF training requires coordinating multiple models and execution phases:
+* **Actor (policy model)** – generates responses
+* **Critic (value model)** – estimates returns
+* **Reference model** – stabilizes policy updates via KL constraint
+* **Reward model** – scores generated outputs
+Naïve implementations suffer from:
+* GPU underutilization during rollout generation
+* Synchronization bottlenecks between inference and training
+* High memory pressure from multi-model execution
+This project explores an architecture that **partially decouples inference and optimization paths** to improve throughput.
+---
+
 
 ## 🏛️ Architectural Topology
 
@@ -41,6 +58,35 @@ graph TD
 * **REFERENCE_REWARD_GROUP:** Dedicated to frozen evaluation. Stripped of gradient history and backward graph tracking. Models share context space to compute baseline probabilities and reward scalar evaluation in a non-blocking inference ring.
 
 ---
+
+## Key Ideas
+### 1. Decoupled Rollout and Training Pipelines
+Rollout generation (inference-heavy) and PPO updates (compute-heavy) are separated:
+* A background generation loop produces samples
+* Training consumes pre-generated batches
+* Intermediate data is buffered in host memory
+This reduces idle time caused by synchronous generation.
+---
+### 2. Distributed Training with ZeRO / FSDP
+The Actor and Critic are trained using:
+* DeepSpeed ZeRO-3 or FSDP-style sharding
+* Data parallel gradient synchronization
+* Optional tensor parallelism (intra-node)
+The Reference and Reward models run in inference mode only.
+---
+### 3. Communication Overlap (Experimental)
+Gradient synchronization is triggered during backpropagation using hooks to:
+* Overlap compute and communication
+* Reduce step-time stalls
+This is implemented in `distributed/comm_hooks.py` and should be considered **experimental**.
+---
+### 4. Asynchronous Checkpointing
+Checkpointing is offloaded to background threads:
+* Model states copied to CPU memory
+* Disk writes handled asynchronously
+This avoids blocking training steps, though consistency guarantees are minimal.
+---
+
 
 ## 📂 Production Code Architecture
 
