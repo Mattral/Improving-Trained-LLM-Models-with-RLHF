@@ -40,14 +40,30 @@ class RolloutBuffer:
         self.device = device
         self.buffer: list = []
         self.ptr = 0
+        self._lock = threading.Lock()
 
     def add(self, rollout: Rollout) -> None:
         """Add a rollout to the buffer (overwrites oldest if full)."""
-        if len(self.buffer) < self.capacity:
-            self.buffer.append(rollout)
-        else:
-            self.buffer[self.ptr] = rollout
-            self.ptr = (self.ptr + 1) % self.capacity
+        # Convert tensors to pinned CPU memory to enable non-blocking device copies
+        def _pin(t: torch.Tensor) -> torch.Tensor:
+            if not isinstance(t, torch.Tensor):
+                return t
+            return t.detach().cpu().pin_memory()
+
+        pinned = Rollout(
+            query_tokens=_pin(rollout.query_tokens),
+            response_tokens=_pin(rollout.response_tokens),
+            reward=_pin(rollout.reward),
+            logits_policy=_pin(rollout.logits_policy),
+            logits_reference=_pin(rollout.logits_reference),
+        )
+
+        with self._lock:
+            if len(self.buffer) < self.capacity:
+                self.buffer.append(pinned)
+            else:
+                self.buffer[self.ptr] = pinned
+                self.ptr = (self.ptr + 1) % self.capacity
 
     def sample_batch(self, batch_size: int) -> list:
         """Sample a random batch of rollouts."""
@@ -55,7 +71,28 @@ class RolloutBuffer:
             raise RuntimeError("Cannot sample from empty rollout buffer.")
         
         import random
-        return random.sample(self.buffer, min(batch_size, len(self.buffer)))
+        with self._lock:
+            return random.sample(self.buffer, min(batch_size, len(self.buffer)))
+
+    def sample_batch_to_device(self, batch_size: int, device: torch.device) -> list:
+        """Sample a batch and move tensors to `device` using non-blocking transfers.
+
+        Returns a list of Rollout objects resident on `device`.
+        """
+        sampled = self.sample_batch(batch_size)
+
+        moved = []
+        for r in sampled:
+            moved.append(
+                Rollout(
+                    query_tokens=r.query_tokens.to(device, non_blocking=True),
+                    response_tokens=r.response_tokens.to(device, non_blocking=True),
+                    reward=r.reward.to(device, non_blocking=True),
+                    logits_policy=r.logits_policy.to(device, non_blocking=True),
+                    logits_reference=r.logits_reference.to(device, non_blocking=True),
+                )
+            )
+        return moved
 
     def clear(self) -> None:
         """Clear the buffer."""
@@ -310,10 +347,24 @@ class AsyncRolloutPipeline:
                     time.sleep(0.5)
                     continue
 
-                query_batch = query_batch.to(next(self.generator.policy_model.parameters()).device)
+                # Move queries to generator device for fast generation
+                gen_device = next(self.generator.policy_model.parameters()).device
+                query_batch = query_batch.to(gen_device)
+
+                # Generate rollouts on model device
                 rollouts = self.generator.generate_rollout(query_batch)
+
+                # Pin rollouts and enqueue without blocking training threads
                 for rollout in rollouts:
-                    self.buffer.add(rollout)
+                    # Ensure each rollout's tensors are pinned CPU before enqueue
+                    pinned = Rollout(
+                        query_tokens=rollout.query_tokens.detach().cpu().pin_memory(),
+                        response_tokens=rollout.response_tokens.detach().cpu().pin_memory(),
+                        reward=rollout.reward.detach().cpu().pin_memory(),
+                        logits_policy=rollout.logits_policy.detach().cpu().pin_memory(),
+                        logits_reference=rollout.logits_reference.detach().cpu().pin_memory(),
+                    )
+                    self.buffer.add(pinned)
 
                 if self.buffer.is_full():
                     import time

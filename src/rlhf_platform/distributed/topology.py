@@ -121,20 +121,29 @@ class ClusterTopology:
 
         active_ranks = sorted(set(active_ranks))
         inference_ranks = sorted(set(inference_ranks))
+        # Create groups deterministically across all ranks present in the cluster topology.
+        # We explicitly call new_group with the same rank lists on all processes to avoid
+        # falling back to global-only synchronization.
+        try:
+            if active_ranks:
+                self.actor_critic_group = dist.new_group(ranks=active_ranks)
+            if inference_ranks:
+                self.reference_reward_group = dist.new_group(ranks=inference_ranks)
 
-        if active_ranks:
-            self.actor_critic_group = dist.new_group(active_ranks)
-        if inference_ranks:
-            self.reference_reward_group = dist.new_group(inference_ranks)
+            if self.actor_placement is not None:
+                self.actor_group = dist.new_group(ranks=sorted(set(self.actor_placement.device_list)))
+            if self.critic_placement is not None:
+                self.critic_group = dist.new_group(ranks=sorted(set(self.critic_placement.device_list)))
+            if self.reference_placement is not None:
+                self.reference_group = dist.new_group(ranks=sorted(set(self.reference_placement.device_list)))
+            if self.reward_placement is not None:
+                self.reward_group = dist.new_group(ranks=sorted(set(self.reward_placement.device_list)))
 
-        if self.actor_placement is not None:
-            self.actor_group = dist.new_group(sorted(set(self.actor_placement.device_list)))
-        if self.critic_placement is not None:
-            self.critic_group = dist.new_group(sorted(set(self.critic_placement.device_list)))
-        if self.reference_placement is not None:
-            self.reference_group = dist.new_group(sorted(set(self.reference_placement.device_list)))
-        if self.reward_placement is not None:
-            self.reward_group = dist.new_group(sorted(set(self.reward_placement.device_list)))
+            # Ensure all processes reach a consistent state before proceeding.
+            dist.barrier()
+        except Exception as e:
+            # If group creation fails, raise a clear error to surface misconfiguration.
+            raise RuntimeError(f"Failed to initialize process groups: {e}")
 
     @property
     def device(self) -> torch.device:

@@ -14,6 +14,7 @@ import torch.nn.functional as F
 
 from .loss import PPOLossFn, compute_advantages, compute_kl_divergence
 from .rollout import RolloutBuffer, RolloutCollator
+from rlhf_platform.distributed.comm_hooks import CommunicationHooks
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,14 @@ class DistributedPPOEngine:
             f"Gradient accumulation: {gradient_accumulation_steps} steps."
         )
 
+        # Register overlap communication hooks when running distributed
+        if dist.is_initialized():
+            try:
+                CommunicationHooks.register_overlap_hook(self.actor_model)
+                CommunicationHooks.register_gradient_clipping_hook(self.actor_model)
+            except Exception:
+                logger.debug("Failed to register DDP comm hooks; ensure model is wrapped in DDP.")
+
     def collect_rollouts(
         self,
         batch_size: int,
@@ -96,7 +105,7 @@ class DistributedPPOEngine:
         device = next(self.actor_model.parameters()).device
         for key in batch:
             if isinstance(batch[key], torch.Tensor):
-                batch[key] = batch[key].to(device)
+                batch[key] = batch[key].to(device, non_blocking=True)
         
         self.optimizer.zero_grad()
         
@@ -162,6 +171,10 @@ class DistributedPPOEngine:
         
         # Synchronize metrics across ranks
         loss_dict = self._allgather_loss_metrics(loss_dict)
+        # Numerical safety: ensure metrics are finite
+        for k, v in list(loss_dict.items()):
+            if not isinstance(v, float) or (isinstance(v, float) and (v != v or v == float("inf") or v == float("-inf"))):
+                loss_dict[k] = 0.0
         
         return loss_dict
 
