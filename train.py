@@ -7,6 +7,7 @@ import os
 import random
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -44,20 +45,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-response-length", type=int, default=64, help="Max generated token length for each rollout.")
     parser.add_argument("--prompts", nargs="*", default=None, help="Optional list of prompts to use for generation.")
     parser.add_argument("--use-cpu", action="store_true", help="Force CPU execution rather than GPU/distributed.")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging for debugging.")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
     return parser.parse_args()
 
 
 def init_distributed(args: argparse.Namespace) -> tuple[int, int, int]:
+    """Initialize distributed process group with comprehensive validation."""
     world_size = int(os.environ.get("WORLD_SIZE", "1"))
     rank = int(os.environ.get("RANK", "0"))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
 
+    logger.info(f"Rank {rank}/{world_size}: Distributed environment: WORLD_SIZE={world_size}, RANK={rank}, LOCAL_RANK={local_rank}")
+
     if world_size > 1:
         backend = "nccl" if torch.cuda.is_available() and not args.use_cpu else "gloo"
-        dist.init_process_group(backend=backend, init_method="env://")
-        logger.info(f"Initialized distributed process group: rank={rank}, world_size={world_size}, backend={backend}")
+        logger.info(f"Rank {rank}: Initializing process group with backend={backend}")
+        try:
+            dist.init_process_group(backend=backend, init_method="env://")
+            logger.info(f"Rank {rank}: Process group initialized successfully.")
+            
+            # Verify connectivity
+            dist.barrier()
+            logger.info(f"Rank {rank}: All ranks synchronized at barrier.")
+        except Exception as e:
+            logger.error(f"Rank {rank}: Failed to initialize process group: {e}")
+            raise
     else:
-        logger.info("Running in single-process mode.")
+        logger.info("Rank 0: Running in single-process mode (world_size=1).")
 
     return world_size, rank, local_rank
 
@@ -177,36 +192,109 @@ def main() -> None:
     global args
     args = parse_args()
 
+    # Set random seeds for reproducibility
+    torch.manual_seed(args.seed)
+    random.seed(args.seed)
+
+    # Adjust logging verbosity
+    if args.verbose:
+        logging.getLogger("rlhf_train").setLevel(logging.DEBUG)
+        logger.debug("Verbose logging enabled.")
+
+    logger.info("\n" + "=" * 80)
+    logger.info("RLHF Distributed Training Entrypoint")
+    logger.info("=" * 80)
+
+    # Stage 1: Distributed initialization
+    logger.info("\n[Stage 1/5] Initializing distributed process group...")
     world_size, rank, local_rank = init_distributed(args)
     use_cuda = torch.cuda.is_available() and not args.use_cpu
     device = torch.device(f"cuda:{local_rank}" if use_cuda else "cpu")
+    logger.info(f"Rank {rank}: Device selection: device={device}, use_cuda={use_cuda}")
 
-    topology = load_topology_from_yaml(args.config, rank=rank, local_rank=local_rank)
+    # Stage 2: Topology initialization
+    logger.info("\n[Stage 2/5] Loading cluster topology and initializing process groups...")
+    try:
+        topology = load_topology_from_yaml(args.config, rank=rank, local_rank=local_rank)
+        logger.info(f"Rank {rank}: Topology loaded successfully.")
+        logger.info(f"Rank {rank}: Actor placement: {topology.actor_placement.device_list if topology.actor_placement else 'None'}")
+        logger.info(f"Rank {rank}: Critic placement: {topology.critic_placement.device_list if topology.critic_placement else 'None'}")
+        logger.info(f"Rank {rank}: Reference placement: {topology.reference_placement.device_list if topology.reference_placement else 'None'}")
+        logger.info(f"Rank {rank}: Reward placement: {topology.reward_placement.device_list if topology.reward_placement else 'None'}")
+    except Exception as e:
+        logger.error(f"Rank {rank}: Failed to load topology: {e}")
+        if dist.is_initialized():
+            dist.destroy_process_group()
+        raise
+
     if not dist.is_initialized():
-        logger.warning("Distributed groups are not initialized; topology groups will not be created.")
+        logger.warning(f"Rank {rank}: Distributed not initialized; topology groups will not be created.")
 
-    actor_model, critic_model, reference_model, reward_model, tokenizer = build_models(
-        actor_name=topology.actor_placement.model_name,
-        critic_name=topology.critic_placement.model_name,
-        reference_name=topology.reference_placement.model_name,
-        reward_name=topology.reward_placement.model_name,
-        device=device,
-        use_fp16=True,
-    )
+    # Stage 3: Model initialization
+    logger.info("\n[Stage 3/5] Loading actor, critic, reference, and reward models...")
+    try:
+        if not topology.actor_placement or not topology.critic_placement or not topology.reference_placement or not topology.reward_placement:
+            raise ValueError("Incomplete topology placements in config.")
+        
+        actor_model, critic_model, reference_model, reward_model, tokenizer = build_models(
+            actor_name=topology.actor_placement.model_name,
+            critic_name=topology.critic_placement.model_name,
+            reference_name=topology.reference_placement.model_name,
+            reward_name=topology.reward_placement.model_name,
+            device=device,
+            use_fp16=True,
+        )
+        logger.info(f"Rank {rank}: All models loaded successfully.")
+    except Exception as e:
+        logger.error(f"Rank {rank}: Failed to load models: {e}")
+        if dist.is_initialized():
+            dist.destroy_process_group()
+        raise
+    
+    # Synchronize after model loading
+    if dist.is_initialized():
+        dist.barrier()
+        logger.info(f"Rank {rank}: Model loading barrier synchronized.")
 
+    # Stage 4: Distributed model wrapping and communication hook registration
+    logger.info("\n[Stage 4/5] Wrapping models in DDP and registering communication hooks...")
     if dist.is_initialized() and topology.is_active_rank():
+        logger.info(f"Rank {rank}: Wrapping actor and critic in DDP (active rank).")
         actor_model = wrap_distributed(actor_model, topology.actor_group, rank, local_rank, use_cuda)
         critic_model = wrap_distributed(critic_model, topology.critic_group, rank, local_rank, use_cuda)
-        CommunicationHooks.register_overlap_hook(actor_model)
-        CommunicationHooks.register_gradient_clipping_hook(actor_model)
-        CommunicationHooks.register_nan_check_hook(actor_model)
+        
+        try:
+            CommunicationHooks.register_overlap_hook(actor_model)
+            logger.info(f"Rank {rank}: Registered gradient bucket overlap hook.")
+        except Exception as e:
+            logger.warning(f"Rank {rank}: Could not register overlap hook: {e}")
+        
+        try:
+            CommunicationHooks.register_gradient_clipping_hook(actor_model)
+            logger.info(f"Rank {rank}: Registered gradient clipping hook.")
+        except Exception as e:
+            logger.warning(f"Rank {rank}: Could not register gradient clipping hook: {e}")
+        
+        try:
+            CommunicationHooks.register_nan_check_hook(actor_model)
+            logger.info(f"Rank {rank}: Registered NaN detection hook.")
+        except Exception as e:
+            logger.warning(f"Rank {rank}: Could not register NaN check hook: {e}")
+    else:
+        logger.info(f"Rank {rank}: Rank is in inference group; skipping DDP wrapping.")
 
+    # Create optimizer
+    actor_params = list(actor_model.parameters())
+    critic_params = list(critic_model.parameters())
     optimizer = AdamW(
-        list(actor_model.parameters()) + list(critic_model.parameters()),
+        actor_params + critic_params,
         lr=1e-5,
         eps=1e-8,
     )
+    logger.info(f"Rank {rank}: Optimizer created with {len(actor_params) + len(critic_params)} parameters.")
 
+    # Stage 5: Rollout pipeline and training engine initialization
+    logger.info("\n[Stage 5/5] Initializing async rollout pipeline and PPO engine...")
     sampler = create_query_sampler(tokenizer, args.prompts or [], args.batch_size, device)
     buffer = RolloutBuffer(capacity=512, device=device.type)
     generator = RolloutGenerator(
@@ -216,6 +304,8 @@ def main() -> None:
         tokenizer=tokenizer,
         max_response_length=args.max_response_length,
     )
+    logger.info(f"Rank {rank}: Rollout generator initialized.")
+    
     pipeline = AsyncRolloutPipeline(
         generator=generator,
         buffer=buffer,
@@ -224,6 +314,7 @@ def main() -> None:
         num_generator_threads=2,
     )
     pipeline.start_generators()
+    logger.info(f"Rank {rank}: Async rollout pipeline started with 2 generator threads.")
 
     ppo_engine = DistributedPPOEngine(
         actor_model=actor_model,
@@ -235,6 +326,7 @@ def main() -> None:
         rank=rank,
         gradient_accumulation_steps=8,
     )
+    logger.info(f"Rank {rank}: PPO engine initialized. Target steps: {args.num_steps}")
 
     checkpoint_dir = Path(args.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -244,19 +336,39 @@ def main() -> None:
         rank=rank,
         save_frequency=100,
     )
+    logger.info(f"Rank {rank}: Checkpoint manager initialized. Directory: {checkpoint_dir.resolve()}")
 
     telemetry = RankAwareTelemetry(rank=rank, world_size=world_size, log_file=None)
+    logger.info(f"Rank {rank}: Telemetry initialized.")
+    
+    # Final barrier before training
+    if dist.is_initialized():
+        dist.barrier()
+    logger.info(f"Rank {rank}: Initialization complete. Starting training loop.")
+    logger.info("\n" + "=" * 80)
+    logger.info("TRAINING LOOP")
+    logger.info("=" * 80 + "\n")
 
     try:
         while ppo_engine.step < args.num_steps:
+            # Wait for rollouts to populate buffer
             if buffer.size() < max(1, args.batch_size):
+                if args.verbose and ppo_engine.step % 10 == 0:
+                    logger.debug(f"Rank {rank}: Waiting for rollouts. Buffer size: {buffer.size()}")
                 time.sleep(0.2)
                 continue
 
+            # Execute PPO step
             start_ts = time.time()
-            metrics = ppo_engine.ppo_step()
+            try:
+                metrics = ppo_engine.ppo_step()
+            except Exception as e:
+                logger.error(f"Rank {rank}: PPO step failed at iteration {ppo_engine.step}: {e}")
+                raise
+            
             duration_ms = (time.time() - start_ts) * 1000.0
 
+            # Log metrics
             if metrics:
                 telemetry.log_ppo_step(
                     step=ppo_engine.step,
@@ -267,9 +379,18 @@ def main() -> None:
                     duration_ms=duration_ms,
                 )
                 if rank == 0 and ppo_engine.step % 50 == 0:
-                    logger.info(f"Step={ppo_engine.step} metrics={metrics}")
+                    logger.info(
+                        f"Step {ppo_engine.step:4d} | "
+                        f"actor_loss={metrics.get('actor_loss', 0.0):.4f} | "
+                        f"value_loss={metrics.get('value_loss', 0.0):.4f} | "
+                        f"kl={metrics.get('kl_divergence', 0.0):.4f} | "
+                        f"entropy={metrics.get('policy_entropy', 0.0):.4f} | "
+                        f"time={duration_ms:.1f}ms"
+                    )
 
+            # Periodic checkpointing
             if rank == 0 and ppo_engine.step % 100 == 0 and ppo_engine.step > 0:
+                logger.info(f"Rank {rank}: Saving checkpoint at step {ppo_engine.step}.")
                 checkpoint_manager.save_checkpoint(
                     step=ppo_engine.step,
                     model_name=topology.actor_placement.model_name,
@@ -278,6 +399,7 @@ def main() -> None:
                     metrics=metrics,
                 )
 
+            # Memory monitoring
             if rank == 0 and ppo_engine.step and ppo_engine.step % 10 == 0:
                 allocated = torch.cuda.memory_allocated(device) / 1024.0 / 1024.0 if use_cuda else 0.0
                 reserved = torch.cuda.memory_reserved(device) / 1024.0 / 1024.0 if use_cuda else 0.0
@@ -287,15 +409,31 @@ def main() -> None:
                     reserved_mb=reserved,
                     max_allocated_mb=max_allocated,
                 )
+                if args.verbose:
+                    logger.debug(
+                        f"Rank {rank}: Memory: allocated={allocated:.1f}MB, "
+                        f"reserved={reserved:.1f}MB, max={max_allocated:.1f}MB"
+                    )
+
     except KeyboardInterrupt:
-        logger.info("Interrupted by user; attempting graceful shutdown.")
+        logger.info(f"Rank {rank}: Interrupted by user; attempting graceful shutdown.")
+    except Exception as e:
+        logger.error(f"Rank {rank}: Training loop failed: {e}")
+        logger.error(traceback.format_exc())
+        raise
     finally:
+        logger.info(f"Rank {rank}: Cleaning up resources.")
         pipeline.stop_generators()
         checkpoint_manager.flush_and_shutdown()
         if dist.is_initialized():
-            dist.destroy_process_group()
+            try:
+                dist.destroy_process_group()
+                logger.info(f"Rank {rank}: Process group destroyed.")
+            except Exception as e:
+                logger.warning(f"Rank {rank}: Error destroying process group: {e}")
 
-    logger.info("Training complete.")
+    logger.info(f"Rank {rank}: Training complete. Final step: {ppo_engine.step}/{args.num_steps}")
+    logger.info("=" * 80)
 
 
 if __name__ == "__main__":
