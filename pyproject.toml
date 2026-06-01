@@ -73,16 +73,13 @@ Repository = "https://github.com/yourusername/rlhf-platform.git"
 Issues = "https://github.com/yourusername/rlhf-platform/issues"
 
 [tool.setuptools]
-packages = "find"
-
-[tool.setuptools.package-dir]
-"" = "src"
-
-[tool.setuptools.package-data]
-rlhf_platform = ["py.typed"]
+package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+rlhf_platform = ["py.typed"]
 
 [tool.black]
 line-length = 100

@@ -1,0 +1,65 @@
+run_name: rlhf_toy_run
+output_dir: ./outputs/toy_run
+seed: 42
+device: cuda
+num_gpus: 1
+use_fsdp: false
+use_deepspeed: false
+log_to_wandb: true
+wandb_project: rlhf-platform-toy
+wandb_entity: null
+eval_steps: 10
+save_steps: 20
+save_total_limit: 2
+
+model:
+  policy_model_id: distilgpt2
+  policy_model_revision: main
+  reference_model_id: distilgpt2
+  reward_model_id: prajjwal1/bert-tiny
+  trust_remote_code: false
+  load_in_8bit: false
+  load_in_4bit: false
+  use_peft_lora: true
+  lora_rank: 4
+  lora_alpha: 8
+  lora_dropout: 0.05
+  attn_implementation: eager
+
+optimization:
+  optimizer: adamw
+  learning_rate: 5e-5
+  weight_decay: 0.01
+  gradient_accumulation_steps: 1
+  max_grad_norm: 1.0
+  warmup_ratio: 0.1
+  lr_scheduler_type: linear
+  num_train_epochs: 1
+  mixed_precision: "no"
+  gradient_checkpointing: false
+
+alignment:
+  method: ppo
+  ppo_epsilon: 0.2
+  ppo_num_epochs: 2
+  target_kl: 0.1
+  kl_coefficient: 0.05
+  gamma: 0.99
+  gae_lambda: 0.95
+  entropy_coefficient: 0.01
+  value_loss_coefficient: 0.5
+  advantage_normalization: true
+
+dataset:
+  dataset_name: Anthropic/hh-rlhf
+  dataset_split: train
+  preference_field: chosen
+  rejected_field: rejected
+  prompt_field: prompt
+  batch_size: 8
+  eval_batch_size: 16
+  max_seq_length: 256
+  num_workers: 0
+  prefetch_factor: 2
+  pin_memory: false
+  preprocessing_num_workers: 0
