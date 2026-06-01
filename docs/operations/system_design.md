@@ -22,18 +22,18 @@ Cluster Specification (Production Tier)
 Rack layout:
 ┌─────────────────────────────────────────────┐
 │ Node 0 (8× H100)                            │
-│ ┌────┬────┬────┬────┬────┬────┬────┬────┐  │
-│ │GPU0│GPU1│GPU2│GPU3│GPU4│GPU5│GPU6│GPU7│  │
-│ └────┴────┴────┴────┴────┴────┴────┴────┘  │
+│ ┌────┬────┬────┬────┬────┬────┬────┬────┐   │
+│ │GPU0│GPU1│GPU2│GPU3│GPU4│GPU5│GPU6│GPU7│   │
+│ └────┴────┴────┴────┴────┴────┴────┴────┘   │
 │ NVLink: 900 GB/s (full mesh between all 8)  │
 │ PCIe Host Bridge: 128 GB/s (to CPU/RAM)     │
 └─────────────────────────────────────────────┘
               ↕ 400 Gbps IB
 ┌─────────────────────────────────────────────┐
 │ Node 1 (8× H100)                            │
-│ ┌────┬────┬────┬────┬────┬────┬────┬────┐  │
-│ │GPU0│GPU1│GPU2│GPU3│GPU4│GPU5│GPU6│GPU7│  │
-│ └────┴────┴────┴────┴────┴────┴────┴────┘  │
+│ ┌────┬────┬────┬────┬────┬────┬────┬────┐   │
+│ │GPU0│GPU1│GPU2│GPU3│GPU4│GPU5│GPU6│GPU7│   │
+│ └────┴────┴────┴────┴────┴────┴────┴────┘   │
 └─────────────────────────────────────────────┘
 ```
 
@@ -94,20 +94,20 @@ Bandwidth per link: 112.5 GB/s bidirectional
 Peak aggregate: 8 GPUs × 7 NVLinks each = 900 GB/s bisection bandwidth
 
 Communication pattern for DDP gradient synchronization (Actor ranks 0–7):
-┌─────────────────────────────┐
-│ Ranks 0–3 (Node 0)          │
-│ Perform backward() locally   │
-│ Gradients staged for ring    │
-│ all_reduce:                  │
-│   Rank 0 → Rank 1 (112 GB/s)│
-│   Rank 1 → Rank 2 (112 GB/s)│
-│   Rank 2 → Rank 3 (112 GB/s)│
-│   Rank 3 → (IB to Node 1)   │
-│                              │
-│ Latency: 50 μs (NVLink)      │
-│ Throughput: 90+ GB/s         │
-│ (HW contention reduces below peak)
-└─────────────────────────────┘
+┌───────────────────────────────────┐
+│ Ranks 0–3 (Node 0)                │
+│ Perform backward() locally        │
+│ Gradients staged for ring         │
+│ all_reduce:                       │
+│   Rank 0 → Rank 1 (112 GB/s)      │
+│   Rank 1 → Rank 2 (112 GB/s)      │
+│   Rank 2 → Rank 3 (112 GB/s)      │
+│   Rank 3 → (IB to Node 1)         │
+│                                   │
+│ Latency: 50 μs (NVLink)           │
+│ Throughput: 90+ GB/s              │
+│ (HW contention reduces below peak)│
+└───────────────────────────────────┘
 
 Total ring hops on Node 0: 4 hops × 112 GB/s = 28 GB/s aggregate throughput
 ```
