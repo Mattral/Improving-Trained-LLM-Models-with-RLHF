@@ -1,3 +1,58 @@
+Metadata-Version: 2.4
+Name: rlhf-platform
+Version: 0.1.0
+Summary: Production-grade distributed RLHF platform for scaling alignment across multi-node GPU clusters
+Author-email: ML Systems Team <ml-systems@example.com>
+License: Apache-2.0
+Project-URL: Homepage, https://github.com/yourusername/rlhf-platform
+Project-URL: Documentation, https://rlhf-platform.readthedocs.io
+Project-URL: Repository, https://github.com/yourusername/rlhf-platform.git
+Project-URL: Issues, https://github.com/yourusername/rlhf-platform/issues
+Keywords: rlhf,reinforcement-learning,language-models,distributed-training
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: Science/Research
+Classifier: License :: OSI Approved :: Apache Software License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Scientific/Engineering
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Classifier: Topic :: Scientific/Engineering :: Information Analysis
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: torch>=2.0.0
+Requires-Dist: transformers==4.32.0
+Requires-Dist: tokenizers==0.13.3
+Requires-Dist: safetensors==0.3.2
+Requires-Dist: accelerate==0.22.0
+Requires-Dist: datasets==2.14.4
+Requires-Dist: peft==0.5.0
+Requires-Dist: trl==0.5.0
+Requires-Dist: bitsandbytes==0.41.1
+Requires-Dist: triton==3.7.0
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: tensorboard>=2.13.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.0; extra == "dev"
+Requires-Dist: pytest-cov>=4.0; extra == "dev"
+Requires-Dist: black>=23.0; extra == "dev"
+Requires-Dist: isort>=5.12; extra == "dev"
+Requires-Dist: mypy>=1.0; extra == "dev"
+Requires-Dist: flake8>=6.0; extra == "dev"
+Requires-Dist: pylint>=2.17; extra == "dev"
+Provides-Extra: eval
+Requires-Dist: lm-eval>=0.3.0; extra == "eval"
+Requires-Dist: rouge-score>=0.1.2; extra == "eval"
+Requires-Dist: bert-score>=0.3.13; extra == "eval"
+Provides-Extra: deepspeed
+Requires-Dist: deepspeed>=0.12.0; extra == "deepspeed"
+Provides-Extra: docs
+Requires-Dist: sphinx>=6.0; extra == "docs"
+Requires-Dist: sphinx-rtd-theme>=1.2; extra == "docs"
+Requires-Dist: sphinx-autodoc-typehints>=1.22; extra == "docs"
+
 # 🚀Improving-Trained-LLM-Models-with-RLHF: Scalable Asymmetric Multi-Node Post-Training Framework
 
 [![CI Performance Matrix](https://github.com/Mattral/Improving-Trained-LLM-Models-with-RLHF/actions/workflows/ci_perf.yml/badge.svg)](https://github.com/Mattral/Improving-Trained-LLM-Models-with-RLHF/actions)
@@ -24,33 +79,6 @@ Naïve implementations suffer from:
 This project explores an architecture that **partially decouples inference and optimization paths** to improve throughput.
 ---
 
-## ⚡ Quick Start (Toy Mode — <20 minutes on T4)
-
-Get RLHF training running instantly on a single T4 GPU:
-
-```bash
-# Clone and setup
-git clone https://github.com/Mattral/Improving-Trained-LLM-Models-with-RLHF
-cd Improving-Trained-LLM-Models-with-RLHF
-pip install -e .
-
-# 1. Train SFT model (5-7 min)
-python -m rlhf_platform.cli train-sft --toy --epochs 1
-
-# 2. Train reward model (3-5 min)
-python -m rlhf_platform.cli train-reward --toy --epochs 1
-
-# 3. Validate PPO config (coming Phase 3.5)
-python -m rlhf_platform.cli run-ppo --toy
-```
-
-✅ **Total Time:** <20 minutes on T4  
-✅ **Toys:** 1,000 preference pairs from Anthropic HH-RLHF  
-✅ **Output:** Fine-tuned SFT model + trained reward model  
-
-For detailed guide, see [Phase 3 CLI Documentation](docs/PHASE_3_CLI.md).
-
----
 
 ## 🏛️ Architectural Topology
 
