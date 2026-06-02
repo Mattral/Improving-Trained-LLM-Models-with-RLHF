@@ -242,7 +242,7 @@ The framework is accompanied by an enterprise-grade engineering specification su
 | [**Engineering Philosophy**](docs/core/philosophy.md) | Tradeoffs between async generation throughput and strict mathematical alignment bounds. | Research Directors |
 | [**Threat & Security Matrix**](docs/governance/security.md) | Defenses against adversarial reward optimization, tensor-overflow vectoring, and checkpoint leaks. | Security Specialists |
 | [**Contribution Protocols**](docs/governance/contributing.md) | Code quality gatekeeping: strict type invariant boundaries, shape-check assertions, and CI validation. | Core Contributors |
-```
+
 
 ---
 
