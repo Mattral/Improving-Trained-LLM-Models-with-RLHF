@@ -526,7 +526,6 @@ This project builds on the excellent work of:
 
 - **GitHub Issues**: https://github.com/Mattral/Improving-Trained-LLM-Models-with-RLHF/issues
 - **Discussions**: GitHub Discussions (coming soon)
-- **Email**: ml-systems@example.com
 
 ---
 
